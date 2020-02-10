@@ -15,6 +15,7 @@ struct apb_interface : public sc_interface {
 struct i2c_interface : public sc_interface {
   virtual void send_start_bit() = 0;
   virtual bool send_addr(unsigned addr) = 0;
+  virtual bool send_rd_wr(unsigned rd_wr) = 0;
   virtual bool send_data(byte data) = 0;
   virtual bool recv_data(byte& data) = 0;
   virtual void send_stop_bit() = 0;
@@ -78,26 +79,26 @@ SC_MODULE(I2C_Master), public apb_interface {
   // Function to write the registers inside I2C Master
   virtual bool apb_write(unsigned addr, unsigned data) {
     if (addr == BAUD_RATE_REG_ADDR) {    // Read baud rate register
-     SC_REPORT_INFO("I2C_Write", "Writing Baud rate = ");
+     SC_REPORT_INFO(name(), "Writing Baud rate = ");
      cout << hex << data << endl;
      baud_rate_reg = data;
     } else if (addr == TX_DATA_REG_ADDR) {   // Error to read tx_data_reg fifo
-     SC_REPORT_INFO("I2C_Write", "Pushing data into tx fifo = ");
+     SC_REPORT_INFO(name(), "Pushing data into tx fifo = ");
      cout << hex << data << endl;
      tx_data_reg.write(data);
     } else if (addr == RX_DATA_REG_ADDR) {  // Read the rx_data_reg fifo contents
-     SC_REPORT_ERROR("I2C_Write", "cannot write to receive fifo (read only)");
+     SC_REPORT_ERROR(name(), "cannot write to receive fifo (read only)");
      return false;
     } else if (addr == I2C_SLAVE_ADDR_REG_ADDR) {  // Read the i2c_slave_addr register
-     SC_REPORT_INFO("I2C_Write", "Writing to SLAVE_ADDR_REG = ");
+     SC_REPORT_INFO(name(), "Writing to SLAVE_ADDR_REG = ");
      cout << hex << data << endl;
      i2c_slave_addr = data;
     } else if (addr == RD_WR_REG_ADDR) {  // Read the rd_wr register
-     SC_REPORT_INFO("I2C_Write", "Writing to RD_WR_REG = ");
+     SC_REPORT_INFO(name(), "Writing to RD_WR_REG = ");
      cout << hex << (data & 0x1) << endl;
      rd_wr = data & 0x1;
     } else {   // Error : Out of bounds of all register addresses
-     SC_REPORT_ERROR("I2C_Read", "Address out of range ");
+     SC_REPORT_ERROR(name(), "Address out of range ");
      return false;
     }
     return true;
@@ -121,7 +122,7 @@ SC_MODULE(I2C_Master), public apb_interface {
 
   // I2C transfer
   // (a) I2C phase
-  enum I2C_State { START_BIT, ADDR_PHASE, DATA_PHASE, STOP_BIT };
+  enum I2C_State { START_BIT, ADDR_PHASE, OP_PHASE, DATA_PHASE, STOP_BIT };
   I2C_State m_i2c_state{STOP_BIT};  // By default, in STOP state
 
   // Send a byte of data using I2C protocol : START_BIT -> ADDR -> DATA BYTES -> STOP_BIT
@@ -142,9 +143,19 @@ SC_MODULE(I2C_Master), public apb_interface {
     if (m_i2c_state == ADDR_PHASE) {
       if (i2c_if->send_addr(i2c_slave_addr)) {
         cout << "Addr : " << i2c_slave_addr << " sent on I2C if/port.." << endl;
-        m_i2c_state = DATA_PHASE;
+        m_i2c_state = OP_PHASE;
       } else {
         cerr << "Addr : " << i2c_slave_addr << " sent on I2C if/port was not acknowledged by any slave .." << endl;
+        m_i2c_state = STOP_BIT;  // FIXME: Check if this is correct
+      }
+    }
+
+    if (m_i2c_state == OP_PHASE) {
+      if (i2c_if->send_rd_wr(rd_wr)) {  // Write operation
+        cout << "Operation : " << rd_wr << " sent on I2C if/port.." << endl;
+        m_i2c_state = DATA_PHASE;
+      } else {
+        cerr << "Operation " << rd_wr << " send failed on I2C if/port .." << endl;
         m_i2c_state = STOP_BIT;  // FIXME: Check if this is correct
       }
     }
@@ -183,9 +194,10 @@ SC_MODULE(I2C_Slave), public i2c_interface {
     // if (addr == 0x123) return true;
     return true; 
   }
-  virtual bool send_data(byte data) { SC_REPORT_INFO("send_data", "received data = "); cout << hex << (unsigned)data << endl; return true; }
+  bool send_rd_wr(unsigned rd_wr_op) { return true; }
+  virtual bool send_data(byte data) { SC_REPORT_INFO(name(), "received data = "); cout << hex << (unsigned)data << endl; return true; }
   // Send all 0xFF bytes to I2C Master
-  virtual bool recv_data(byte& data) { SC_REPORT_INFO("recv_data", "sending data = 0xFF"); data = 0xFF; return true; }
+  virtual bool recv_data(byte& data) { SC_REPORT_INFO(name(), "sending data = 0xFF"); data = 0xFF; return true; }
   virtual void send_stop_bit() { SC_REPORT_INFO(name(), "Received STOP bit"); }
 };
 
@@ -209,7 +221,7 @@ SC_MODULE(Host) {
 
     // Send the data to I2C Master to be transferred to I2C Slave
     for (int i = 0; i < sizeof(test_data)/sizeof(test_data[0]); ++i) {
-      bus_if->apb_write(0x0004, test_data[i]);
+      bus_if->apb_write(0x0004, test_data[i]);  // Writing to tx_fifo reg of I2C Master
     }
   }
 };
